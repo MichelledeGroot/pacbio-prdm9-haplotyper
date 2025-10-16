@@ -52,16 +52,46 @@ for HAP in HP1 HP2; do
     | cut -f7 | head -n 5 > "${RESULTS_DIR}/spanning_readnames_${HAP}.txt"
 done
 
-# Check if both haplotypes have at least 5 reads
-for HAP in HP1 HP2; do
-  COUNT=$(wc -l < "${RESULTS_DIR}/spanning_readnames_${HAP}.txt")
-  log "${HAP} has ${COUNT} spanning reads."
-  if [ "$COUNT" -lt 5 ]; then
-    log "Error: ${HAP} has less than 5 spanning reads. Exiting."
-    exit 1
-  fi
-done
+# Check haplotype read counts and determine mode
+HP1_COUNT=$(wc -l < "${RESULTS_DIR}/spanning_readnames_HP1.txt")
+HP2_COUNT=$(wc -l < "${RESULTS_DIR}/spanning_readnames_HP2.txt")
 
+log "HP1 has ${HP1_COUNT} spanning reads."
+log "HP2 has ${HP2_COUNT} spanning reads."
+
+if [ "$HP1_COUNT" -lt 5 ] || [ "$HP2_COUNT" -lt 5 ]; then
+  MODE="unphased"
+  log "Detected homozygous region (one or both HP < 5 reads). Using unphased reads."
+
+  # Create unphased spanning read list from all reads in the region
+  bedtools intersect -f 1.0 -wb \
+    -a "${INPUT_DIR}/prdm9_target.bed" \
+    -b "${RESULTS_DIR}/${PROBAND}.PRDM9.bam" \
+    | cut -f7 | sort -u | head -n 5 > "${RESULTS_DIR}/spanning_readnames_unphased.txt"
+
+  # Duplicate unphased read list for HP1 and HP2
+  cp "${RESULTS_DIR}/spanning_readnames_unphased.txt" "${RESULTS_DIR}/spanning_readnames_HP1.txt"
+  cp "${RESULTS_DIR}/spanning_readnames_unphased.txt" "${RESULTS_DIR}/spanning_readnames_HP2.txt"
+
+  # Duplicate BAMs so both HPs use the same reads
+  cp "${RESULTS_DIR}/${PROBAND}.PRDM9.bam" "${RESULTS_DIR}/${PROBAND}.HP1.PRDM9.bam"
+  cp "${RESULTS_DIR}/${PROBAND}.PRDM9.bam" "${RESULTS_DIR}/${PROBAND}.HP2.PRDM9.bam"
+
+  log "Set HP1 and HP2 to identical unphased reads."
+  log "Mode: ${MODE}"
+  log "Unphased reads used:"
+  awk '{print "  " $0}' "${RESULTS_DIR}/spanning_readnames_unphased.txt" | tee -a "$LOG_FILE"
+
+else
+  MODE="phased"
+  log "Mode: ${MODE}"
+  log "HP1 reads used:"
+  awk '{print "  " $0}' "${RESULTS_DIR}/spanning_readnames_HP1.txt" | tee -a "$LOG_FILE"
+  log "HP2 reads used:"
+  awk '{print "  " $0}' "${RESULTS_DIR}/spanning_readnames_HP2.txt" | tee -a "$LOG_FILE"
+fi
+
+## Get fasta and find best haplotype match
 log "Mapping reads and generating match files..."
 for HAP in HP1 HP2; do
   log "Processing ${HAP}..."
@@ -98,9 +128,10 @@ for HAP in HP1 HP2; do
   rm -f "${RESULTS_DIR}/tmp_col1.txt"
 done
 
-log "Summarizing best haplotype(s) per haplotype..."
+log "Summarizing best haplotype(s) per haplotype and adding phasing info..."
 for HAP in HP1 HP2; do
-  awk -v SAMPLE="$PROBAND" -v HAP="$HAP" '
+  HAPLO_MATCH="${RESULTS_DIR}/${PROBAND}.${HAP}.PRDM9_haplotypematch.tsv"
+  awk -v SAMPLE="$PROBAND" -v HAP="$HAP" -v MODE="$MODE" -v HP1_COUNT="$HP1_COUNT" -v HP2_COUNT="$HP2_COUNT" '
   function median(a, n) {
     asort(a)
     if (n % 2) return a[(n+1)/2]
@@ -114,22 +145,24 @@ for HAP in HP1 HP2; do
       if($i=="YES") yes_count++
       n++; mis_arr[n]=$(i+1)
     }
-    if(yes_count==5){  # Only haplotypes with all YES
+    if(yes_count==5){
       med=median(mis_arr, n)
       mismatches=mis_arr[1]
       for(j=2;j<=n;j++) mismatches=mismatches","mis_arr[j]
       if(min_med=="" || med<min_med){
         min_med=med
-        lines=SAMPLE"\t"HAP"\t"$1"\t"yes_count"\t"med"\t"mismatches
+        lines=SAMPLE "\t" HAP "\t" $1 "\t" yes_count "\t" med "\t" mismatches "\t" MODE "\t" HP1_COUNT "\t" HP2_COUNT
       } else if(med==min_med){
-        lines=lines "\n"SAMPLE"\t"HAP"\t"$1"\t"yes_count"\t"med"\t"mismatches
+        lines=lines "\n" SAMPLE "\t" HAP "\t" $1 "\t" yes_count "\t" med "\t" mismatches "\t" MODE "\t" HP1_COUNT "\t" HP2_COUNT
       }
     }
   }
-  END{
+  END {
+    if(lines!="") print "sample\thap\tbest_haplotype\t#YES\tmedian_mismatches\tmismatches_per_read\tmode\tHP1_reads\tHP2_reads"
     if(lines!="") print lines
-  }' "${RESULTS_DIR}/${PROBAND}.${HAP}.PRDM9_combined.tsv" \
-  > "${RESULTS_DIR}/${PROBAND}.${HAP}.PRDM9_haplotypematch.tsv"
+  }' "${RESULTS_DIR}/${PROBAND}.${HAP}.PRDM9_combined.tsv" > "$HAPLO_MATCH"
+
+  log "Haplotypematch written to $HAPLO_MATCH with mode info."
 done
 
 log "Pipeline finished for ${PROBAND}."
