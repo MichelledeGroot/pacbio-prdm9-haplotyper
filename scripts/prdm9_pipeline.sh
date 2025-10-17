@@ -46,10 +46,33 @@ samtools view -d HP:2 -o "${RESULTS_DIR}/${PROBAND}.HP2.PRDM9.bam" "${RESULTS_DI
 
 log "Finding spanning reads..."
 for HAP in HP1 HP2; do
-  bedtools intersect -f 1.0 -wb \
+  HAP_BAM="${RESULTS_DIR}/${PROBAND}.${HAP}.PRDM9.bam"
+  OUT_FILE="${RESULTS_DIR}/spanning_readnames_${HAP}.txt"
+
+  if [ ! -s "$HAP_BAM" ]; then
+    log "Warning: ${HAP_BAM} missing or empty. Writing empty file."
+    : > "$OUT_FILE"
+    continue
+  fi
+
+  READ_COUNT=$(samtools view -c "$HAP_BAM" 2>/dev/null || echo 0)
+
+  if [ "$READ_COUNT" -eq 0 ]; then
+    log "No reads found in ${HAP_BAM}. Writing empty file."
+    : > "$OUT_FILE"
+    continue
+  fi
+
+  if ! bedtools intersect -f 1.0 -wb \
     -a "${INPUT_DIR}/prdm9_target.bed" \
-    -b "${RESULTS_DIR}/${PROBAND}.${HAP}.PRDM9.bam" \
-    | cut -f7 | head -n 5 > "${RESULTS_DIR}/spanning_readnames_${HAP}.txt"
+    -b "$HAP_BAM" \
+    | cut -f7 | head -n 5 > "$OUT_FILE"; then
+      log "bedtools failed for ${HAP}. Writing empty file."
+      : > "$OUT_FILE"
+      continue
+  fi
+
+  log "${HAP}: wrote $(wc -l < "$OUT_FILE") read names."
 done
 
 # Check haplotype read counts and determine mode
@@ -158,7 +181,6 @@ for HAP in HP1 HP2; do
     }
   }
   END {
-    if(lines!="") print "sample\thap\tbest_haplotype\t#YES\tmedian_mismatches\tmismatches_per_read\tmode\tHP1_reads\tHP2_reads"
     if(lines!="") print lines
   }' "${RESULTS_DIR}/${PROBAND}.${HAP}.PRDM9_combined.tsv" > "$HAPLO_MATCH"
 
