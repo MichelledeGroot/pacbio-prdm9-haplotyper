@@ -7,7 +7,7 @@ PIPELINE_SCRIPT="${BASE_DIR}/scripts/prdm9_pipeline.sh"
 RESULTS_BASE="${BASE_DIR}/results"
 
 MAX_SAMPLES=0  # 0 = all
-RUN_NAME="homozygous_fix"
+RUN_NAME="use_5_reads"
 
 # === Slurm submission ===
 count=0

@@ -11,6 +11,9 @@ PROBAND="$1"
 PROBAND_BAM="$2"
 RUN="$3"
 
+# Default number of reads
+number_of_reads=5
+
 # Base folder setup
 BASE_DIR="/ifs/data/research/projects/michelle/17_prdm9_haplotypecheck"
 INPUT_DIR="${BASE_DIR}/data"
@@ -66,7 +69,7 @@ for HAP in HP1 HP2; do
   if ! bedtools intersect -f 1.0 -wb \
     -a "${INPUT_DIR}/prdm9_target.bed" \
     -b "$HAP_BAM" \
-    | cut -f7 | head -n 5 > "$OUT_FILE"; then
+    | cut -f7 | head -n "$number_of_reads" > "$OUT_FILE"; then
       log "bedtools failed for ${HAP}. Writing empty file."
       : > "$OUT_FILE"
       continue
@@ -82,15 +85,15 @@ HP2_COUNT=$(wc -l < "${RESULTS_DIR}/spanning_readnames_HP2.txt")
 log "HP1 has ${HP1_COUNT} spanning reads."
 log "HP2 has ${HP2_COUNT} spanning reads."
 
-if [ "$HP1_COUNT" -lt 5 ] || [ "$HP2_COUNT" -lt 5 ]; then
+if [ "$HP1_COUNT" -lt "$number_of_reads" ] || [ "$HP2_COUNT" -lt "$number_of_reads" ]; then
   MODE="unphased"
-  log "Detected homozygous region (one or both HP < 5 reads). Using unphased reads."
+  log "Detected homozygous region (one or both HP < $number_of_reads reads). Using unphased reads."
 
   # Create unphased spanning read list from all reads in the region
   bedtools intersect -f 1.0 -wb \
     -a "${INPUT_DIR}/prdm9_target.bed" \
     -b "${RESULTS_DIR}/${PROBAND}.PRDM9.bam" \
-    | cut -f7 | sort -u | head -n 5 > "${RESULTS_DIR}/spanning_readnames_unphased.txt"
+    | cut -f7 | sort -u | head -n "$number_of_reads" > "${RESULTS_DIR}/spanning_readnames_unphased.txt"
 
   # Duplicate unphased read list for HP1 and HP2
   cp "${RESULTS_DIR}/spanning_readnames_unphased.txt" "${RESULTS_DIR}/spanning_readnames_HP1.txt"
@@ -114,14 +117,14 @@ else
   awk '{print "  " $0}' "${RESULTS_DIR}/spanning_readnames_HP2.txt" | tee -a "$LOG_FILE"
 fi
 
-## Get fasta and find best haplotype match
+## Mapping reads and generating match files
 log "Mapping reads and generating match files..."
 for HAP in HP1 HP2; do
   log "Processing ${HAP}..."
   samtools fasta "${RESULTS_DIR}/${PROBAND}.${HAP}.PRDM9.bam" > "${RESULTS_DIR}/${PROBAND}.${HAP}.PRDM9.fasta"
   grep -f "${RESULTS_DIR}/spanning_readnames_${HAP}.txt" "${RESULTS_DIR}/${PROBAND}.${HAP}.PRDM9.fasta" -A 1 | grep -v "\-\-" > "${RESULTS_DIR}/targetreads_${HAP}.fasta"
 
-  for i in {1..5}; do
+  for i in $(seq 1 $number_of_reads); do
     head -n $((i * 2)) "${RESULTS_DIR}/targetreads_${HAP}.fasta" | tail -n 2 > "${RESULTS_DIR}/read${i}_${HAP}.fasta"
 
     minimap2 -c -x map-hifi --seed 123 --secondary=no --paf-no-hit \
@@ -144,13 +147,25 @@ done
 
 log "Combining match files per haplotype..."
 for HAP in HP1 HP2; do
-  FIRST_FILE=$(ls "${RESULTS_DIR}"/read*.${HAP}.prdm9matches.tsv | head -n1)
-  cut -f1 "$FIRST_FILE" > "${RESULTS_DIR}/tmp_col1.txt"
-  paste "${RESULTS_DIR}/tmp_col1.txt" "${RESULTS_DIR}"/read*.${HAP}.prdm9matches.tsv | cut -f1,3,4,6,7,9,10,12,13,15,16 \
-    > "${RESULTS_DIR}/${PROBAND}.${HAP}.PRDM9_combined.tsv"
-  rm -f "${RESULTS_DIR}/tmp_col1.txt"
+  FILES=(${RESULTS_DIR}/read*.${HAP}.prdm9matches.tsv)
+  if [ ${#FILES[@]} -eq 0 ]; then
+    log "No match files found for ${HAP}, skipping."
+    continue
+  fi
+
+  paste "${FILES[@]}" | awk 'BEGIN{FS=OFS="\t"}{
+      # Print first column once (haplotype ID)
+      printf "%s", $1
+      for(i=2; i<=NF; i+=3){
+          # Print YES/NO and mismatch only, skip repeated hap name
+          printf "\t%s\t%s", $(i), $(i+1)
+      }
+      print ""
+  }' > "${RESULTS_DIR}/${PROBAND}.${HAP}.PRDM9_combined.tsv"
+
 done
 
+# Summarize best haplotype(s) per haplotype and add phasing info
 log "Summarizing best haplotype(s) per haplotype and adding phasing info..."
 for HAP in HP1 HP2; do
   HAPLO_MATCH="${RESULTS_DIR}/${PROBAND}.${HAP}.PRDM9_haplotypematch.tsv"
@@ -168,7 +183,7 @@ for HAP in HP1 HP2; do
       if($i=="YES") yes_count++
       n++; mis_arr[n]=$(i+1)
     }
-    if(yes_count==5){
+    if(yes_count==n){   # Only haplotypes with all YES
       med=median(mis_arr, n)
       mismatches=mis_arr[1]
       for(j=2;j<=n;j++) mismatches=mismatches","mis_arr[j]
@@ -176,7 +191,7 @@ for HAP in HP1 HP2; do
         min_med=med
         lines=SAMPLE "\t" HAP "\t" $1 "\t" yes_count "\t" med "\t" mismatches "\t" MODE "\t" HP1_COUNT "\t" HP2_COUNT
       } else if(med==min_med){
-        lines=lines "\n" SAMPLE "\t" HAP "\t" $1 "\t" yes_count "\t" med "\t" mismatches "\t" MODE "\t" HP1_COUNT "\t" HP2_COUNT
+        lines=lines "\n"SAMPLE "\t" HAP "\t" $1 "\t" yes_count "\t" med "\t" mismatches "\t" MODE "\t" HP1_COUNT "\t" HP2_COUNT
       }
     }
   }
